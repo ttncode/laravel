@@ -11,63 +11,71 @@
 HTTP Request
      │
      ▼
-public/index.php          ← Entry point (Step 1)
+public/index.php              ← Step 01: Entry Point
      │
      ▼
-bootstrap/app.php         ← Application boot (Step 2)
+Application (Container)       ← Steps 02–03: Container + Application
+     │
+     ├── Request / Response   ← Step 04: HTTP abstractions
      │
      ▼
-Application (Container)   ← IoC Container (Step 3)
+HttpKernel                    ← Step 05: Orchestrator
      │
-     ├── ServiceProviders  ← Registration (Step 4)
+     ├── Router               ← Step 06: URL matching
      │
-     ▼
-HttpKernel                ← Request handling (Step 5)
+     ├── Pipeline             ← Step 07: Middleware onion
      │
-     ▼
-Pipeline (Middleware)     ← Request → Middleware chain (Step 6)
+     ├── ServiceProviders     ← Step 08: Organized registration
      │
      ▼
-Router                    ← Route matching (Step 7)
+Controller                    ← Step 09: Action handling
      │
      ▼
-Controller                ← Action dispatch (Step 8)
+View                          ← Step 10: Template rendering
      │
      ▼
-Response                  ← HTTP response (Step 9)
+Config / Env                  ← Step 11: Configuration
      │
      ▼
-View / Blade              ← Template rendering (Step 10)
-     │
-     ▼
-Config / Env              ← Configuration (Step 11)
-     │
-     ▼
-Validation                ← Input validation (Step 12)
+Validation                    ← Step 12: Input validation
 ```
 
 ---
 
 ## 📚 Steps Index
 
-| Step | Name | Key Concept | Laravel Equivalent |
-|------|------|-------------|-------------------|
-| [01](./01-entry-point.md) | Entry Point | Bootstrap flow | `public/index.php` |
-| [02](./02-application-bootstrap.md) | Application Bootstrap | App creation | `bootstrap/app.php` |
-| [03](./03-container.md) | IoC Container | Dependency injection | `Illuminate\Container\Container` |
-| [04](./04-service-providers.md) | Service Providers | Service registration | `Illuminate\Support\ServiceProvider` |
-| [05](./05-http-kernel.md) | HTTP Kernel | Request lifecycle | `Illuminate\Foundation\Http\Kernel` |
-| [06](./06-middleware-pipeline.md) | Middleware Pipeline | Request filtering | `Illuminate\Pipeline\Pipeline` |
-| [07](./07-router.md) | Router | Route matching | `Illuminate\Routing\Router` |
-| [08](./08-request-response.md) | Request & Response | HTTP abstractions | `Illuminate\Http\Request` / `Response` |
-| [09](./09-controller.md) | Controller | Action handling | `Illuminate\Routing\Controller` |
-| [10](./10-view-engine.md) | View Engine | Template rendering | `Illuminate\View\View` |
-| [11](./11-config-env.md) | Config & Env | Configuration | `Illuminate\Config\Repository` |
-| [12](./12-validation.md) | Validation | Input validation | `Illuminate\Validation\Validator` |
+| Step | Name | Key Problem Solved | Laravel Equivalent |
+|------|------|-------------------|-------------------|
+| [01](./01-entry-point.md) | Entry Point | Where do all HTTP requests go? | `public/index.php` |
+| [02](./02-container.md) | IoC Container | How do objects find their dependencies? | `Illuminate\Container\Container` |
+| [03](./03-application.md) | Application | What is the central hub of the framework? | `Illuminate\Foundation\Application` |
+| [04](./04-request-response.md) | Request & Response | How do we represent HTTP cleanly? | `Illuminate\Http\Request/Response` |
+| [05](./05-http-kernel.md) | HTTP Kernel | What orchestrates the full request lifecycle? | `Illuminate\Foundation\Http\Kernel` |
+| [06](./06-router.md) | Router | How does a URL map to a handler? | `Illuminate\Routing\Router` |
+| [07](./07-pipeline.md) | Middleware Pipeline | How do cross-cutting concerns wrap a request? | `Illuminate\Pipeline\Pipeline` |
+| [08](./08-service-providers.md) | Service Providers | Where does service registration code live? | `Illuminate\Support\ServiceProvider` |
+| [09](./09-controller.md) | Controller | How are related actions grouped? | `Illuminate\Routing\Controller` |
+| [10](./10-view-engine.md) | View Engine | How is HTML separated from logic? | `Illuminate\View\View` |
+| [11](./11-config-env.md) | Config & Env | How does config change per environment? | `Illuminate\Config\Repository` |
+| [12](./12-validation.md) | Validation | How is input validated consistently? | `Illuminate\Validation\Validator` |
 
 ---
 
-## 🏗 Target Project Structure
+## 📐 Step Format
+
+Each step follows this exact structure:
+
+1. 🚩 **The Problem** — A concrete real-world problem the step solves
+2. 🔍 **Why Naive Solutions Fail** — Why the obvious fix breaks at scale
+3. 💡 **The Solution** — The architectural pattern derived from the problem
+4. 🏗 **Implementation** — Full working code, no placeholders
+5. ✅ **Verify** — Exact command + expected output to confirm it works
+6. 📌 **What We Built** — Summary of files and key components
+7. ⚠️ **Simplifications** — What was simplified vs real Laravel
+
+---
+
+## 🏗 Target Directory Structure (End State)
 
 ```
 laravel-clone/
@@ -81,7 +89,7 @@ laravel-clone/
 ├── config/
 │   └── app.php
 ├── public/
-│   └── index.php
+│   └── index.php           ← Grows across steps, finalized in Step 05
 ├── resources/
 │   └── views/
 │       └── home.php
@@ -89,81 +97,52 @@ laravel-clone/
 │   └── web.php
 ├── src/
 │   ├── Container/
-│   │   └── Container.php
+│   │   └── Container.php   ← Step 02
 │   ├── Foundation/
-│   │   └── Application.php
+│   │   └── Application.php ← Step 03
 │   ├── Http/
-│   │   ├── Request.php
-│   │   ├── Response.php
-│   │   └── Kernel.php
+│   │   ├── Request.php     ← Step 04
+│   │   ├── Response.php    ← Step 04
+│   │   └── Kernel.php      ← Step 05
 │   ├── Pipeline/
-│   │   └── Pipeline.php
+│   │   └── Pipeline.php    ← Step 07
 │   ├── Routing/
-│   │   ├── Router.php
-│   │   └── Route.php
+│   │   ├── Router.php      ← Step 06
+│   │   └── Route.php       ← Step 06
 │   ├── Support/
-│   │   └── ServiceProvider.php
+│   │   └── ServiceProvider.php ← Step 08
 │   ├── View/
-│   │   └── View.php
+│   │   └── ViewFactory.php ← Step 10
 │   ├── Config/
-│   │   └── Repository.php
-│   └── Validation/
-│       └── Validator.php
+│   │   └── Repository.php  ← Step 11
+│   ├── Validation/
+│   │   └── Validator.php   ← Step 12
+│   └── helpers.php         ← Step 10
 └── composer.json
 ```
 
 ---
 
-## 🧠 Core Design Principles Applied
+## ⚠️ What We Deliberately Exclude
 
-### 1. Explicit Over Magic
-Every component is wired **manually**. No hidden facades or static calls unless strictly necessary.
-
-### 2. Constructor Injection
-All dependencies are passed via `__construct()`. No service locator pattern.
-
-### 3. Thin Classes
-Each class does **one thing**. No god objects.
-
-### 4. Match Laravel's Mental Model
-Same names, same concepts — just simpler internals.
-
----
-
-## ⚠️ What We Deliberately Skip
-
-| Laravel Feature | Why We Skip |
-|----------------|-------------|
-| Eloquent ORM | Too complex; use PDO directly if needed |
-| Events / Broadcasting | Not core to understanding the framework |
+| Laravel Feature | Why We Exclude |
+|----------------|----------------|
+| Eloquent ORM | Requires its own framework; use PDO directly |
+| Events / Broadcasting | Not part of the HTTP lifecycle |
 | Queue / Jobs | Background processing is out of scope |
-| Artisan Console | CLI tools are secondary |
+| Artisan Console | CLI is a separate concern |
 | Facades | Static proxies obscure what's happening |
-| Cache | Focus on HTTP lifecycle first |
-| Auth | Complex; not architectural core |
-| Blade directives | Keep view engine minimal |
-
----
-
-## 📐 Step Format Reminder
-
-Each step document follows this exact format:
-
-1. 🎯 **Purpose** — WHY this exists
-2. 🧠 **Concept** — WHAT it is, mapped to Laravel
-3. 🏗 **Implementation** — HOW (full code)
-4. 🔗 **Integration** — How it connects to previous steps
-5. ✅ **Usage Example** — Show it working
-6. 📌 **Key Elements** — What was built
-7. ⚠️ **Simplifications** — What was simplified vs Laravel
+| Blade directives | Plain PHP templates are clearer for learning |
+| Auth system | Complex; builds on primitives you learn here |
 
 ---
 
 ## 🚀 Getting Started
 
-1. Read each step document in order
-2. Build the code alongside the guide
-3. Run the example at the end of each step
-4. Move to the next step only when the current one works
+```bash
+mkdir laravel-clone && cd laravel-clone
+```
+
+Then follow the steps in order. Each one builds on the last, and each one can be verified before moving to the next.
 
 **First step:** [01 — Entry Point →](./01-entry-point.md)
