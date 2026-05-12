@@ -2,41 +2,46 @@
 
 ---
 
-## 1. 🎯 Purpose (WHY)
+## 🚩 The Problem
 
-The **HTTP Kernel** is the gatekeeper between the raw HTTP request and the framework. It:
-- Bootstraps the application (loads config, env, providers)
-- Passes the request through the **middleware stack** (pipeline)
-- Dispatches to the **router**
-- Returns a response
+Now that we have an `Application` and a `Request`, who is responsible for turning that Request into a Response?
 
-Think of it as the orchestrator. It doesn't do any of these things itself — it delegates to the Pipeline (Step 6) and Router (Step 7).
+If we put all the logic in `public/index.php`, the file becomes a massive script:
+1. Boot the application
+2. Load configuration
+3. Register service providers
+4. Run global middleware
+5. Route the request to a controller
+6. Handle exceptions
 
-**Laravel equivalent:** `Illuminate\Foundation\Http\Kernel` (~702 lines → ~120 lines)
-
----
-
-## 2. 🧠 Concept (WHAT)
-
-The Kernel's `handle()` method is the critical path:
-
-```
-handle($request)
-  → bootstrap()              ← Load env, config, providers
-  → (new Pipeline)           ← Push request through middleware
-      ->send($request)
-      ->through($middleware)
-      ->then(dispatchToRouter)
-  → return $response
-```
-
-The clever part: **the router is the final destination of the pipeline**. Middleware wraps around it like an onion — each layer can inspect/modify the request before and after.
+**Why is this bad?**
+- `index.php` becomes unmaintainable.
+- You can't write tests easily, because testing would require executing `index.php` directly.
+- The framework has no clear "engine" that orchestrates the flow.
 
 ---
 
-## 3. 🏗 Implementation (HOW)
+## 💡 The Solution: The Kernel
 
-### File: `laravel-clone/src/Http/Kernel.php`
+The **Kernel** (specifically the HTTP Kernel) is the engine of the framework. It acts as the central coordinator. 
+
+You can think of the Kernel as a black box:
+**Request goes in $\rightarrow$ Response comes out.**
+
+Internally, the Kernel does three things when `handle()` is called:
+1. **Bootstraps** the application (loads config, registers providers).
+2. Sends the Request through the **Middleware Pipeline**.
+3. Hands the Request to the **Router** to execute your actual code.
+
+By extracting this into a class, `public/index.php` becomes incredibly clean, and the request lifecycle becomes testable.
+
+---
+
+## 🏗 Implementation
+
+### File: `src/Http/Kernel.php`
+
+Create the Kernel class. Right now, it returns a hardcoded Response. In the next steps, we will connect the Router (Step 06) and the Pipeline (Step 07).
 
 ```php
 <?php
@@ -44,83 +49,44 @@ The clever part: **the router is the final destination of the pipeline**. Middle
 namespace Framework\Http;
 
 use Framework\Foundation\Application;
-use Framework\Pipeline\Pipeline;
-use Framework\Routing\Router;
-use Throwable;
 
 class Kernel
 {
-    /**
-     * The application instance.
-     */
     protected Application $app;
 
     /**
-     * The router instance.
+     * Classes to run before the request is handled.
+     * (We will add Config, Providers, etc., here later).
      */
-    protected Router $router;
+    protected array $bootstrappers = [];
 
-    /**
-     * The global middleware stack — runs on every request.
-     *
-     * @var class-string[]
-     */
-    protected array $middleware = [];
-
-    /**
-     * The bootstrappers run before handling a request.
-     *
-     * @var class-string[]
-     */
-    protected array $bootstrappers = [
-        \Framework\Foundation\Bootstrap\LoadConfiguration::class,
-        \Framework\Foundation\Bootstrap\RegisterProviders::class,
-        \Framework\Foundation\Bootstrap\BootProviders::class,
-    ];
-
-    public function __construct(Application $app, Router $router)
+    public function __construct(Application $app)
     {
-        $this->app    = $app;
-        $this->router = $router;
+        $this->app = $app;
     }
 
     /**
-     * Handle an incoming HTTP request.
-     * This is called from public/index.php.
+     * Handle an incoming HTTP request and return a Response.
      */
     public function handle(Request $request): Response
     {
         try {
-            $response = $this->sendRequestThroughRouter($request);
-        } catch (Throwable $e) {
-            $response = $this->renderException($request, $e);
+            $this->bootstrap();
+            
+            // For now, return a basic response. 
+            // In Step 06/07, this will hand off to the Pipeline/Router.
+            return new Response('Kernel is handling the request!', 200);
+            
+        } catch (\Throwable $e) {
+            // In a real framework, this would pass to an Exception Handler
+            return new Response('Server Error: ' . $e->getMessage(), 500);
         }
-
-        return $response;
     }
 
     /**
-     * Push the request through middleware, then dispatch to the router.
+     * Bootstrap the application for HTTP requests.
      */
-    protected function sendRequestThroughRouter(Request $request): Response
-    {
-        // Store request in the container
-        $this->app->instance('request', $request);
-
-        // Run bootstrappers once per process
-        $this->bootstrap();
-
-        // Pipeline: middleware onion → router at the center
-        return (new Pipeline($this->app))
-            ->send($request)
-            ->through($this->middleware)
-            ->then($this->dispatchToRouter());
-    }
-
-    /**
-     * Bootstrap the application (once per process).
-     */
-    public function bootstrap(): void
+    protected function bootstrap(): void
     {
         if (! $this->app->hasBeenBootstrapped()) {
             $this->app->bootstrapWith($this->bootstrappers);
@@ -128,227 +94,84 @@ class Kernel
     }
 
     /**
-     * The final destination of the pipeline — dispatch to the router.
-     */
-    protected function dispatchToRouter(): \Closure
-    {
-        return function (Request $request): Response {
-            $this->app->instance('request', $request);
-
-            return $this->router->dispatch($request);
-        };
-    }
-
-    /**
-     * Render an exception into an HTTP response.
-     */
-    protected function renderException(Request $request, Throwable $e): Response
-    {
-        $status  = method_exists($e, 'getStatusCode') ? $e->getStatusCode() : 500;
-        $message = $this->app->make('config')->get('app.debug', false)
-            ? $e->getMessage() . "\n" . $e->getTraceAsString()
-            : 'Server Error';
-
-        return new Response($message, $status);
-    }
-
-    /**
-     * Perform post-response cleanup.
-     * Called from public/index.php after send().
+     * Perform any final cleanup after the response has been sent to the browser.
      */
     public function terminate(Request $request, Response $response): void
     {
-        // Call terminate() on any middleware that implements it
-        foreach ($this->middleware as $middlewareClass) {
-            $instance = $this->app->make($middlewareClass);
-
-            if (method_exists($instance, 'terminate')) {
-                $instance->terminate($request, $response);
-            }
-        }
+        // For example: closing database connections, writing session data.
     }
 }
 ```
 
-### File: `laravel-clone/src/Foundation/Bootstrap/LoadConfiguration.php`
+### Update: `public/index.php`
+
+Now we finalize the Entry Point. It will retrieve the Kernel from the Container, capture the Request, ask the Kernel to handle it, send the Response, and finally terminate.
 
 ```php
 <?php
 
-namespace Framework\Foundation\Bootstrap;
+require_once __DIR__ . '/../vendor/autoload.php';
 
-use Framework\Config\Repository;
-use Framework\Foundation\Application;
+// 1. Get the Application instance (configured by the Builder)
+$app = require_once __DIR__ . '/../bootstrap/app.php';
 
-class LoadConfiguration
-{
-    public function bootstrap(Application $app): void
-    {
-        // Load all PHP files from config/ directory
-        $config = new Repository();
+// 2. Resolve the Kernel from the Container
+$kernel = $app->make(\Framework\Http\Kernel::class);
 
-        foreach (glob($app->configPath('*.php')) as $file) {
-            $key = basename($file, '.php');
-            $config->set($key, require $file);
-        }
+// 3. Capture the incoming global HTTP state into a Request object
+$request = \Framework\Http\Request::capture();
 
-        $app->instance('config', $config);
-        $app->instance(Repository::class, $config);
-    }
-}
-```
+// 4. Pass the Request into the Engine (Kernel) to get a Response
+$response = $kernel->handle($request);
 
-### File: `laravel-clone/src/Foundation/Bootstrap/RegisterProviders.php`
+// 5. Send the headers and output to the browser
+$response->send();
 
-```php
-<?php
-
-namespace Framework\Foundation\Bootstrap;
-
-use Framework\Foundation\Application;
-
-class RegisterProviders
-{
-    public function bootstrap(Application $app): void
-    {
-        // Providers are already registered in bootstrap/app.php for now.
-        // In a full framework, this would read from config/app.php 'providers' array.
-
-        $config = $app->make('config');
-        $providers = $config->get('app.providers', []);
-
-        foreach ($providers as $providerClass) {
-            $app->register(new $providerClass($app));
-        }
-    }
-}
-```
-
-### File: `laravel-clone/src/Foundation/Bootstrap/BootProviders.php`
-
-```php
-<?php
-
-namespace Framework\Foundation\Bootstrap;
-
-use Framework\Foundation\Application;
-
-class BootProviders
-{
-    public function bootstrap(Application $app): void
-    {
-        $app->boot();
-    }
-}
-```
-
-### File: `laravel-clone/config/app.php`
-
-```php
-<?php
-
-return [
-    'name'  => 'Laravel Clone',
-    'env'   => 'local',
-    'debug' => true,
-
-    'providers' => [
-        \Framework\Routing\RoutingServiceProvider::class,
-        \App\Providers\AppServiceProvider::class,
-        // Add more providers here
-    ],
-];
+// 6. Perform cleanup
+$kernel->terminate($request, $response);
 ```
 
 ---
 
-## 4. 🔗 Integration
+## ✅ Verify
 
-The full bootstrap sequence is now:
+Run the server:
+```bash
+php -S 0.0.0.0:8000 -t public
+```
 
+Open `http://localhost:8000/`. You should see:
 ```
-public/index.php
-  → $app = require bootstrap/app.php       (Application created)
-  → $kernel = $app->make(Kernel::class)    (Kernel auto-resolved)
-  → $request = Request::capture()
-  → $response = $kernel->handle($request)
-       → bootstrap()
-           → LoadConfiguration::bootstrap() → binds 'config'
-           → RegisterProviders::bootstrap() → reads config/app.php providers
-           → BootProviders::bootstrap()     → calls boot() on all providers
-       → Pipeline → middleware → Router
-  → $response->send()
-  → $kernel->terminate($request, $response)
+Kernel is handling the request!
 ```
+
+**What just happened?**
+1. `index.php` asked the container for `Kernel::class`.
+2. The container built it, injecting the `$app`.
+3. `Request::capture()` read your HTTP headers.
+4. `$kernel->handle()` received the request, ran `bootstrap()`, and returned a Response.
+5. `$response->send()` echoed the output.
 
 ---
 
-## 5. ✅ Usage Example
-
-### Adding a global middleware
-
-```php
-// app/Http/Middleware/LogRequests.php
-namespace App\Http\Middleware;
-
-use Framework\Http\Request;
-use Framework\Http\Response;
-
-class LogRequests
-{
-    public function handle(Request $request, \Closure $next): Response
-    {
-        error_log('Request: ' . $request->method() . ' ' . $request->uri());
-
-        $response = $next($request);
-
-        error_log('Response: ' . $response->getStatusCode());
-
-        return $response;
-    }
-}
-```
-
-```php
-// In your Kernel subclass (or directly in bootstrap):
-// app/Http/Kernel.php
-namespace App\Http;
-
-class Kernel extends \Framework\Http\Kernel
-{
-    protected array $middleware = [
-        \App\Http\Middleware\LogRequests::class,
-    ];
-}
-```
-
----
-
-## 6. 📌 Key Elements
+## 📌 What We Built
 
 | Element | Purpose |
 |---------|---------|
-| `handle()` | Main entry point — orchestrates everything |
-| `bootstrap()` | Loads config, registers + boots providers (once) |
-| `sendRequestThroughRouter()` | Pipeline setup |
-| `dispatchToRouter()` | Closure passed as pipeline destination |
-| `terminate()` | Post-response cleanup |
-| `$bootstrappers` | Ordered list of bootstrapper classes |
-| `$middleware` | Global middleware applied to every request |
+| `Kernel->handle()` | The main orchestrator method. Takes a Request, returns a Response. |
+| `Kernel->bootstrap()` | Ensures necessary application setup runs *before* routing. |
+| `public/index.php` | The final, clean state of our Front Controller. |
 
 ---
 
-## 7. ⚠️ Simplifications Made
+## ⚠️ Simplifications vs Laravel
 
-| Laravel | Our Clone | Reason |
-|---------|-----------|--------|
-| `Kernel.php` has 702 lines | ~120 lines | Removed: middleware priority sorting, `withoutMiddleware`, request duration tracking |
-| Has `HandleExceptions` bootstrapper | Skipped | Add PHP `set_exception_handler` manually if needed |
-| Has `RegisterFacades` bootstrapper | Skipped | No facades in our framework |
-| Global vs route middleware distinction | Only global middleware | Route middleware added in Step 6 |
-| Maintenance mode check | Skipped | Not architectural |
-| Request lifecycle duration handlers | Skipped | Monitoring/APM concern |
+| Laravel | Our Implementation | Reason |
+|---------|-------------------|--------|
+| Dispatches Events (`RequestHandled`) | No event system | Kept scope limited to HTTP flow. |
+| `sendRequestThroughRouter()` | Simplified | Laravel uses the `Pipeline` class immediately here; we will build that in Step 07. |
+| Dedicated `ExceptionHandler` | Inline `try/catch` | We haven't built a robust exception handling system. |
 
 ---
 
-**Next:** [Step 06 — Middleware Pipeline →](./06-middleware-pipeline.md)
+**Next:** [Step 06 — Router →](./06-router.md)

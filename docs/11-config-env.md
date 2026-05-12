@@ -1,54 +1,78 @@
-# Step 11: Config & Environment
+# Step 11: Config & Env
 
 ---
 
-## 1. 🎯 Purpose (WHY)
+## 🚩 The Problem
 
-Applications need **configuration** — database credentials, API keys, feature flags — that changes between environments (local, staging, production).
-
-The Config + Env system solves two problems:
-1. **Separation**: secrets stay in `.env`, config logic stays in `config/*.php`
-2. **Centralization**: one `config('key')` call, not `getenv()` scattered everywhere
-
-**Laravel equivalent:** `Illuminate\Config\Repository` + `vlucas/phpdotenv`
-
----
-
-## 2. 🧠 Concept (WHAT)
-
-**Two-layer system:**
-
-```
-.env file (secrets, never in git)
-     ↓
-config/app.php, config/database.php, etc. (logic, in git)
-     ↓
-config('app.name')    ← dot-notation access
-config('database.connections.mysql.host')
-```
-
-The `.env` file provides environment-specific values via `$_ENV`. Config files `require` them via `env('KEY', 'default')`.
+Imagine setting up a database connection in a Service Provider:
 
 ```php
-// config/database.php
-return [
-    'default' => env('DB_CONNECTION', 'sqlite'),
-    'connections' => [
-        'sqlite' => [
-            'driver'   => 'sqlite',
-            'database' => env('DB_DATABASE', storage_path('app.sqlite')),
-        ],
-    ],
-];
+$db = new Database(
+    host: '127.0.0.1', 
+    user: 'root', 
+    password: 'supersecretpassword'
+);
 ```
 
-The **Repository** stores the loaded config as a nested array and provides dot-notation `get()` and `set()`.
+**Why is this bad?**
+1. **Security Risk:** If you commit this code to GitHub, your password is public.
+2. **Environment Rigidity:** When you deploy to production, the database host will change. You would have to modify the code itself to deploy, meaning you can't use the exact same codebase locally and in production.
+3. **Scattered Magic Strings:** Configuration values (like "pagination_limit = 15") get scattered throughout the codebase.
 
 ---
 
-## 3. 🏗 Implementation (HOW)
+## 💡 The Solution: `.env` and Config Files
 
-### File: `laravel-clone/src/Config/Repository.php`
+We separate configuration into two layers:
+
+1. **Environment Variables (`.env`)**: A file that is strictly *ignored* by Git. It contains secrets and environment-specific values (like DB passwords or API keys). 
+2. **Configuration Files (`config/*.php`)**: Files committed to version control that return arrays. They use `env()` to read from the environment, falling back to safe defaults.
+
+To make accessing these values easy across the framework, we build a **Config Repository** — a central registry loaded during Application Bootstrap.
+
+---
+
+## 🏗 Implementation
+
+```bash
+mkdir -p src/Config
+touch src/Config/Repository.php
+touch .env
+mkdir config
+touch config/app.php
+```
+
+### Update `src/helpers.php`
+
+Add the `env()` helper and `config()` helper.
+
+```php
+// ... existing view() helper ...
+
+if (! function_exists('env')) {
+    function env(string $key, mixed $default = null): mixed
+    {
+        $value = getenv($key);
+        if ($value === false) {
+            return $default;
+        }
+        return $value;
+    }
+}
+
+if (! function_exists('config')) {
+    function config(string $key, mixed $default = null): mixed
+    {
+        return \Framework\Container\Container::getInstance()
+            ->make(\Framework\Config\Repository::class)
+            ->get($key, $default);
+    }
+}
+```
+
+### File: `src/Config/Repository.php`
+
+A simple wrapper around an array to hold our loaded configuration.
 
 ```php
 <?php
@@ -57,94 +81,42 @@ namespace Framework\Config;
 
 class Repository
 {
-    /**
-     * All loaded configuration items.
-     * Structure: ['app' => [...], 'database' => [...]]
-     */
     protected array $items = [];
 
-    public function __construct(array $items = [])
+    public function set(string $key, mixed $value): void
     {
-        $this->items = $items;
+        $this->items[$key] = $value;
     }
 
     /**
-     * Get a config value by dot-notation key.
-     *
-     * 'app.name'                         → $items['app']['name']
-     * 'database.connections.mysql.host'  → $items['database']['connections']['mysql']['host']
-     *
-     * Returns $default if the key doesn't exist.
+     * Get a config value.
+     * Supports dot notation: config('app.timezone')
      */
     public function get(string $key, mixed $default = null): mixed
     {
-        if (array_key_exists($key, $this->items)) {
-            return $this->items[$key];
-        }
+        $segments = explode('.', $key);
+        $array = $this->items;
 
-        $parts  = explode('.', $key);
-        $config = $this->items;
-
-        foreach ($parts as $part) {
-            if (! is_array($config) || ! array_key_exists($part, $config)) {
+        foreach ($segments as $segment) {
+            if (isset($array[$segment])) {
+                $array = $array[$segment];
+            } else {
                 return $default;
             }
-
-            $config = $config[$part];
         }
 
-        return $config;
-    }
-
-    /**
-     * Set a config value by dot-notation key.
-     *
-     * $config->set('app.debug', true);
-     * $config->set('app', ['name' => 'MyApp', 'debug' => false]);
-     */
-    public function set(string $key, mixed $value): void
-    {
-        $parts = explode('.', $key);
-
-        if (count($parts) === 1) {
-            $this->items[$key] = $value;
-            return;
-        }
-
-        // Navigate to the right nesting level, creating arrays as needed
-        $config = &$this->items;
-
-        foreach ($parts as $i => $part) {
-            if ($i === count($parts) - 1) {
-                $config[$part] = $value;
-            } else {
-                if (! isset($config[$part]) || ! is_array($config[$part])) {
-                    $config[$part] = [];
-                }
-                $config = &$config[$part];
-            }
-        }
-    }
-
-    /**
-     * Check if a config key exists.
-     */
-    public function has(string $key): bool
-    {
-        return $this->get($key) !== null;
-    }
-
-    /**
-     * Get all configuration items.
-     */
-    public function all(): array
-    {
-        return $this->items;
+        return $array;
     }
 }
 ```
 
-### File: `laravel-clone/src/Foundation/Bootstrap/LoadEnvironmentVariables.php`
+### Create a Bootstrapper: `LoadConfiguration.php`
+
+We need to load `.env` variables and PHP config arrays into the Repository before the application handles the request.
+
+```bash
+touch src/Foundation/Bootstrap/LoadConfiguration.php
+```
 
 ```php
 <?php
@@ -152,245 +124,120 @@ class Repository
 namespace Framework\Foundation\Bootstrap;
 
 use Framework\Foundation\Application;
+use Framework\Config\Repository;
 
-class LoadEnvironmentVariables
+class LoadConfiguration
 {
-    /**
-     * Load the .env file into $_ENV before config files are loaded.
-     * This runs BEFORE LoadConfiguration, so env() works in config files.
-     */
     public function bootstrap(Application $app): void
     {
-        $envFile = $app->basePath('.env');
-
-        if (! file_exists($envFile)) {
-            return;
+        // 1. Load .env file (Naive implementation)
+        // Real Laravel uses vlucas/phpdotenv. We will do a basic parse here.
+        $envPath = $app->basePath('.env');
+        if (file_exists($envPath)) {
+            $lines = file($envPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+            foreach ($lines as $line) {
+                if (str_starts_with(trim($line), '#')) continue;
+                
+                list($name, $value) = explode('=', $line, 2);
+                putenv(trim($name) . '=' . trim($value));
+            }
         }
 
-        $lines = file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        // 2. Setup the Config Repository
+        $config = new Repository();
+        $app->instance(Repository::class, $config);
 
-        foreach ($lines as $line) {
-            // Skip comments
-            if (str_starts_with(trim($line), '#')) {
-                continue;
-            }
-
-            // Parse KEY=VALUE
-            if (! str_contains($line, '=')) {
-                continue;
-            }
-
-            [$key, $value] = explode('=', $line, 2);
-
-            $key   = trim($key);
-            $value = trim($value);
-
-            // Strip surrounding quotes
-            if (preg_match('/^"(.*)"$/', $value, $m) || preg_match("/^'(.*)'$/", $value, $m)) {
-                $value = $m[1];
-            }
-
-            // Only set if not already set (allows environment to override .env)
-            if (! array_key_exists($key, $_ENV)) {
-                $_ENV[$key]    = $value;
-                $_SERVER[$key] = $value;
-                putenv("{$key}={$value}");
+        // 3. Load all PHP files in the config/ directory
+        $configPath = $app->configPath();
+        if (is_dir($configPath)) {
+            foreach (glob($configPath . '/*.php') as $file) {
+                // 'app.php' becomes 'app'
+                $key = basename($file, '.php'); 
+                $config->set($key, require $file);
             }
         }
     }
 }
 ```
 
-### Updated bootstrappers in `Kernel.php`
+### Update the Kernel
+
+Add the new bootstrapper to the Kernel so it runs early.
 
 ```php
-protected array $bootstrappers = [
-    \Framework\Foundation\Bootstrap\LoadEnvironmentVariables::class, // ← add first
-    \Framework\Foundation\Bootstrap\LoadConfiguration::class,
-    \Framework\Foundation\Bootstrap\RegisterProviders::class,
-    \Framework\Foundation\Bootstrap\BootProviders::class,
-];
+// In src/Http/Kernel.php, update the $bootstrappers array:
+
+    protected array $bootstrappers = [
+        \Framework\Foundation\Bootstrap\LoadConfiguration::class, // <-- ADD THIS
+        \Framework\Foundation\Bootstrap\RegisterProviders::class,
+        \Framework\Foundation\Bootstrap\BootProviders::class,
+    ];
 ```
 
-### Global helper: add to `laravel-clone/src/helpers.php`
+### Create Sample Files
 
-```php
-if (! function_exists('env')) {
-    function env(string $key, mixed $default = null): mixed
-    {
-        $value = $_ENV[$key] ?? getenv($key);
-
-        if ($value === false || $value === null) {
-            return $default;
-        }
-
-        // Cast special string values
-        return match (strtolower($value)) {
-            'true',  '(true)'  => true,
-            'false', '(false)' => false,
-            'null',  '(null)'  => null,
-            'empty', '(empty)' => '',
-            default => $value,
-        };
-    }
-}
-
-if (! function_exists('config')) {
-    function config(string $key, mixed $default = null): mixed
-    {
-        return app('config')->get($key, $default);
-    }
-}
-
-if (! function_exists('storage_path')) {
-    function storage_path(string $path = ''): string
-    {
-        return app()->storagePath($path);
-    }
-}
-```
-
-### File: `laravel-clone/.env`
-
-```dotenv
-APP_NAME="Laravel Clone"
+**`.env`**:
+```env
+APP_NAME=LaravelClone
 APP_ENV=local
-APP_DEBUG=true
-APP_KEY=base64:CHANGE_ME
-
-DB_CONNECTION=sqlite
-DB_DATABASE=/absolute/path/to/laravel-clone/storage/app.sqlite
 ```
 
-### File: `laravel-clone/.env.example`
-
-```dotenv
-APP_NAME="Laravel Clone"
-APP_ENV=local
-APP_DEBUG=true
-APP_KEY=
-
-DB_CONNECTION=sqlite
-DB_DATABASE=
-```
-
-### File: `laravel-clone/config/app.php`
-
+**`config/app.php`**:
 ```php
 <?php
 
 return [
-    'name'  => env('APP_NAME', 'Laravel Clone'),
-    'env'   => env('APP_ENV', 'production'),
-    'debug' => env('APP_DEBUG', false),
-    'key'   => env('APP_KEY'),
-
-    'providers' => [
-        \Framework\Routing\RoutingServiceProvider::class,
-        \Framework\View\ViewServiceProvider::class,
-        \App\Providers\AppServiceProvider::class,
-    ],
+    'name' => env('APP_NAME', 'DefaultApp'),
+    'env'  => env('APP_ENV', 'production'),
 ];
 ```
 
-### File: `laravel-clone/config/database.php`
+---
+
+## ✅ Verify
+
+Update your `HomeController@index` to test the config:
 
 ```php
-<?php
-
-return [
-    'default' => env('DB_CONNECTION', 'sqlite'),
-
-    'connections' => [
-        'sqlite' => [
-            'driver'   => 'sqlite',
-            'database' => env('DB_DATABASE', storage_path('app.sqlite')),
-        ],
-        'mysql' => [
-            'driver'   => 'mysql',
-            'host'     => env('DB_HOST', '127.0.0.1'),
-            'port'     => env('DB_PORT', '3306'),
-            'database' => env('DB_DATABASE', 'laravel_clone'),
-            'username' => env('DB_USERNAME', 'root'),
-            'password' => env('DB_PASSWORD', ''),
-        ],
-    ],
-];
+    public function index(Request $request)
+    {
+        $appName = config('app.name');
+        return "App Name from Config/Env: " . $appName;
+    }
 ```
+
+Run the server:
+```bash
+php -S 0.0.0.0:8000 -t public
+```
+
+Open `http://localhost:8000/`. You should see:
+```
+App Name from Config/Env: LaravelClone
+```
+
+Change `APP_NAME` in `.env`, refresh the page, and watch it update without touching any PHP code!
 
 ---
 
-## 4. 🔗 Integration
-
-Bootstrap sequence with environment loading:
-
-```
-Kernel::bootstrap()
-  → LoadEnvironmentVariables::bootstrap()   ← reads .env → $_ENV
-  → LoadConfiguration::bootstrap()          ← reads config/*.php (uses env())
-  → RegisterProviders::bootstrap()          ← reads config('app.providers')
-  → BootProviders::bootstrap()              ← calls boot() on providers
-```
-
-The `LoadConfiguration` bootstrapper (Step 5) already reads all `config/*.php` files and stores them in the `Repository`. It now works correctly because `.env` is loaded first.
-
----
-
-## 5. ✅ Usage Example
-
-```php
-// Read config values
-$appName = config('app.name');
-$debug   = config('app.debug', false);
-$dbHost  = config('database.connections.mysql.host');
-
-// Check environment in controller/middleware
-if (config('app.env') === 'local') {
-    // show debug info
-}
-
-// In .env:
-// FEATURE_FLAG=true
-$enabled = env('FEATURE_FLAG', false);
-
-// In a config file (config/features.php):
-return [
-    'new_dashboard' => env('FEATURE_FLAG', false),
-];
-
-// In code:
-if (config('features.new_dashboard')) {
-    // use new dashboard
-}
-```
-
----
-
-## 6. 📌 Key Elements
+## 📌 What We Built
 
 | Element | Purpose |
 |---------|---------|
-| `Repository::get()` | Dot-notation config access |
-| `Repository::set()` | Dynamic config updates |
-| `LoadEnvironmentVariables` | Parses `.env` → `$_ENV` |
-| `LoadConfiguration` | Loads all `config/*.php` files |
-| `env()` helper | Reads `$_ENV` with type casting |
-| `config()` helper | Reads from Repository |
-| `.env` | Machine-specific secrets (git-ignored) |
-| `config/` files | Application configuration (in git) |
+| `.env` | Holds secrets and environment-specific variables. |
+| `config/*.php` | Version-controlled arrays defining application settings. |
+| `Config\Repository` | Central registry for configuration data, accessed via dot notation. |
+| `LoadConfiguration` | Bootstrapper that parses `.env` and populates the `Repository`. |
 
 ---
 
-## 7. ⚠️ Simplifications Made
+## ⚠️ Simplifications vs Laravel
 
-| Laravel | Our Clone | Reason |
-|---------|-----------|--------|
-| Uses `vlucas/phpdotenv` (full .env parser) | Custom simple parser | No dependency needed for basics |
-| `.env` parsing handles multiline values, special chars | Single-line only | Sufficient for learning |
-| `config('key')` returns `null` for missing | Same behavior | ✓ |
-| Config caching (`php artisan config:cache`) | Not implemented | Optimization |
-| `APP_KEY` used for encryption | Not used (no encryption) | Add when needed |
-| Repository implements `ArrayAccess` | Not implemented | Access only via `get()`/`set()` |
+| Laravel | Our Implementation | Reason |
+|---------|-------------------|--------|
+| `vlucas/phpdotenv` library | Basic `putenv()` | A robust `.env` parser requires handling quotes, multiline variables, and nested expansion. |
+| Config Caching | Skipped | Optimization feature out of scope. |
+| Extensive default configs | Single `app.php` | We don't have database, mail, or queue systems to configure yet. |
 
 ---
 

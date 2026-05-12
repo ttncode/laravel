@@ -1,298 +1,192 @@
-# Step 09: Controller
+# Step 09: Controllers
 
 ---
 
-## 1. 🎯 Purpose (WHY)
+## 🚩 The Problem
 
-Controllers organize request-handling logic. Instead of cramming everything into route closures, controllers group related actions into a class:
+Currently, our `routes/web.php` uses closures (anonymous functions) for routing:
 
+```php
+$router->get('/users', function () {
+    // 1. Fetch users from database
+    // 2. Format data
+    // 3. Return response
+});
 ```
-UserController
-  - index()  → list users
-  - show()   → show one user
-  - store()  → create a user
-  - update() → modify a user
-  - destroy() → delete a user
+
+**Why is this bad?**
+1. **Bloat:** If you have 50 routes, `routes/web.php` becomes thousands of lines long and impossible to navigate.
+2. **Reusability:** You cannot reuse the logic in that closure anywhere else.
+3. **No Dependency Injection:** If the closure needs the `Database` or `Logger`, you have to manually fetch it from the container inside the closure (`Container::getInstance()->make(...)`), which is messy.
+
+---
+
+## 💡 The Solution: Controllers
+
+A Controller is simply a class that groups related request-handling logic together.
+
+Instead of writing the logic in the route file, we point the route to a Controller method:
+
+```php
+$router->get('/users', [UserController::class, 'index']);
 ```
 
-This is the "C" in MVC. Controllers receive a **Request**, interact with models/services, and return a **Response** (or a View).
-
-**Laravel equivalent:** `Illuminate\Routing\Controller`
-
----
-
-## 2. 🧠 Concept (WHAT)
-
-Laravel's base Controller is intentionally thin — it's mostly a marker class that provides:
-- Middleware registration per method
-- `callAction()` dispatch
-
-Our version is even simpler: a base class that controller actions can extend, providing helper methods for common response patterns.
-
-The real work is done by the **Router** (Step 7) which resolves and calls the controller. The controller itself is just a PHP class — the container handles dependency injection via its constructor.
+When the Router matches this route, it:
+1. Asks the Container to build the `UserController` (which automatically injects any dependencies the controller's constructor needs).
+2. Calls the `index` method on that controller.
+3. Returns the result as the Response.
 
 ---
 
-## 3. 🏗 Implementation (HOW)
+## 🏗 Implementation
 
-### File: `laravel-clone/src/Routing/Controller.php`
+```bash
+mkdir -p app/Controllers
+touch app/Controllers/HomeController.php
+```
+
+### Create a Controller: `app/Controllers/HomeController.php`
+
+```php
+<?php
+
+namespace App\Controllers;
+
+use Framework\Http\Request;
+
+class HomeController
+{
+    // The Container will automatically inject this if we added a Logger binding!
+    // public function __construct(Logger $logger) {}
+
+    public function index(Request $request)
+    {
+        return "Welcome to the Home Page (via Controller)! Method: " . $request->method();
+    }
+}
+```
+
+### Update the Router: `src/Routing/Router.php`
+
+We need to teach the Router how to handle an array like `[HomeController::class, 'index']`. Luckily, we already built the `call()` method in our `Container` (Step 02) which perfectly handles building classes, injecting dependencies, and executing methods.
 
 ```php
 <?php
 
 namespace Framework\Routing;
 
+use Framework\Container\Container;
 use Framework\Http\Request;
 use Framework\Http\Response;
-use Framework\Http\JsonResponse;
 
-abstract class Controller
+class Router
 {
-    /**
-     * Return an HTML response.
-     */
-    protected function response(string $content, int $status = 200, array $headers = []): Response
+    protected array $routes = [];
+    protected Container $container;
+
+    // Inject the container so we can build controllers
+    public function __construct(Container $container)
     {
-        return new Response($content, $status, $headers);
+        $this->container = $container;
     }
 
-    /**
-     * Return a JSON response.
-     */
-    protected function json(mixed $data, int $status = 200, array $headers = []): JsonResponse
+    public function get(string $uri, \Closure|array $action): void
     {
-        return new JsonResponse($data, $status, $headers);
+        $this->addRoute('GET', $uri, $action);
     }
 
-    /**
-     * Return a redirect response.
-     */
-    protected function redirect(string $url, int $status = 302): Response
+    public function post(string $uri, \Closure|array $action): void
     {
-        return Response::redirect($url, $status);
+        $this->addRoute('POST', $uri, $action);
     }
 
-    /**
-     * Abort with an HTTP error.
-     */
-    protected function abort(int $status, string $message = ''): never
+    protected function addRoute(string $method, string $uri, \Closure|array $action): void
     {
-        throw new \RuntimeException($message ?: "HTTP {$status}");
-        // In a full framework, this would throw an HttpException
-        // that the Kernel renders with the correct status code
+        $this->routes[] = new Route($method, $uri, $action);
+    }
+
+    public function dispatch(Request $request): Response
+    {
+        $method = $request->method();
+        $path = $request->path();
+
+        foreach ($this->routes as $route) {
+            if ($route->matches($method, $path)) {
+                
+                $action = $route->action;
+
+                // Use the Container to execute the action.
+                // This works for closures AND [Class, 'method'] arrays!
+                // We pass the Request object in the parameters array so the 
+                // container can inject it if the controller method asks for it.
+                $content = $this->container->call($action, ['request' => $request]);
+                
+                if ($content instanceof Response) {
+                    return $content;
+                }
+                
+                return new Response(is_string($content) ? $content : json_encode($content));
+            }
+        }
+
+        return new Response('404 Not Found', 404);
     }
 }
 ```
 
-### File: `laravel-clone/app/Controllers/HomeController.php`
+*(Note: Because we added a constructor parameter to `Router`, and we register it via auto-wiring in `AppServiceProvider`, the Container will automatically inject the `$container` into the `Router` when resolving it!)*
+
+### Update: `routes/web.php`
+
+Update your routes file to use the new Controller.
 
 ```php
 <?php
 
-namespace App\Controllers;
-
-use Framework\Http\Request;
-use Framework\Http\Response;
-use Framework\Routing\Controller;
-
-class HomeController extends Controller
-{
-    public function index(Request $request): Response
-    {
-        return $this->response('<h1>Welcome to Laravel Clone!</h1>');
-    }
-}
-```
-
-### File: `laravel-clone/app/Controllers/UserController.php`
-
-```php
-<?php
-
-namespace App\Controllers;
-
-use Framework\Http\Request;
-use Framework\Http\Response;
-use Framework\Routing\Controller;
-
-class UserController extends Controller
-{
-    /**
-     * Constructor injection — the container provides UserRepository automatically.
-     * For now, we use a simple array as a fake "database".
-     */
-    private array $users = [
-        1 => ['id' => 1, 'name' => 'Alice', 'email' => 'alice@example.com'],
-        2 => ['id' => 2, 'name' => 'Bob',   'email' => 'bob@example.com'],
-    ];
-
-    /**
-     * GET /users
-     * List all users.
-     */
-    public function index(Request $request): Response
-    {
-        if ($request->expectsJson()) {
-            return $this->json($this->users);
-        }
-
-        $html = '<ul>';
-        foreach ($this->users as $user) {
-            $html .= "<li>{$user['name']} — {$user['email']}</li>";
-        }
-        $html .= '</ul>';
-
-        return $this->response($html);
-    }
-
-    /**
-     * GET /users/{id}
-     * Show a single user.
-     */
-    public function show(Request $request, string $id): Response
-    {
-        $user = $this->users[(int) $id] ?? null;
-
-        if (! $user) {
-            return $this->json(['error' => 'User not found'], 404);
-        }
-
-        return $this->json($user);
-    }
-
-    /**
-     * POST /users
-     * Create a new user.
-     */
-    public function store(Request $request): Response
-    {
-        $name  = $request->input('name');
-        $email = $request->input('email');
-
-        if (! $name || ! $email) {
-            return $this->json(['error' => 'name and email are required'], 422);
-        }
-
-        $newUser = [
-            'id'    => count($this->users) + 1,
-            'name'  => $name,
-            'email' => $email,
-        ];
-
-        // In a real app, save to database here
-
-        return $this->json($newUser, 201);
-    }
-}
-```
-
-### Updated: `laravel-clone/routes/web.php`
-
-```php
-<?php
-
-/** @var \Framework\Routing\Router $router */
-
+use Framework\Routing\Router;
 use App\Controllers\HomeController;
-use App\Controllers\UserController;
+
+/** @var Router $router */
 
 $router->get('/', [HomeController::class, 'index']);
 
-$router->get('/users',       [UserController::class, 'index']);
-$router->get('/users/{id}',  [UserController::class, 'show']);
-$router->post('/users',      [UserController::class, 'store']);
+$router->get('/about', function () {
+    return 'About Us (Still a Closure)';
+});
 ```
 
 ---
 
-## 4. 🔗 Integration
+## ✅ Verify
 
-The Router (Step 7) calls controllers via the Container:
-
-```php
-// In Router::callAction()
-$controller = $this->container->make($controllerClass);  // DI via container
-$response   = $this->container->call([$controller, $method], $params);
-```
-
-The container:
-1. Creates `UserController` (injecting any constructor dependencies)
-2. Calls `show(Request $request, string $id)` injecting `$request` from the container and `$id` from route parameters
-
----
-
-## 5. ✅ Usage Example
-
-### Testing in browser (after running all steps)
-
+Run the server:
 ```bash
-php -S localhost:8000 -t public
+php -S 0.0.0.0:8000 -t public
 ```
 
+Open `http://localhost:8000/`. You should see:
 ```
-GET  http://localhost:8000/           → HomeController@index
-GET  http://localhost:8000/users      → UserController@index
-GET  http://localhost:8000/users/1    → UserController@show, id=1
-POST http://localhost:8000/users      → UserController@store
-```
-
-### Using constructor injection
-
-```php
-class UserController extends Controller
-{
-    // Container resolves Logger automatically
-    public function __construct(private Logger $logger) {}
-
-    public function index(Request $request): Response
-    {
-        $this->logger->info('Listing users');
-        return $this->json([/* ... */]);
-    }
-}
-```
-
-### Returning different response types
-
-```php
-class ProductController extends Controller
-{
-    public function show(Request $request, string $id): Response
-    {
-        $product = $this->findProduct($id);
-
-        // Let Router's toResponse() handle plain array
-        // OR explicitly build the response:
-        return $request->expectsJson()
-            ? $this->json($product)
-            : $this->response(view('products.show', compact('product')));
-    }
-}
+Welcome to the Home Page (via Controller)! Method: GET
 ```
 
 ---
 
-## 6. 📌 Key Elements
+## 📌 What We Built
 
 | Element | Purpose |
 |---------|---------|
-| `Controller` base class | Provides `response()`, `json()`, `redirect()` helpers |
-| Constructor injection | Container injects services into controller |
-| Method parameters | Route params (`{id}`) passed as method arguments |
-| `Request` parameter | Auto-resolved from container by type hint |
-| `app/Controllers/` | Where user controllers live |
+| `Controller` | Organizes application logic into classes. |
+| `Router->dispatch()` | Updated to use `Container::call()` to execute actions, enabling automatic dependency injection for route handlers. |
 
 ---
 
-## 7. ⚠️ Simplifications Made
+## ⚠️ Simplifications vs Laravel
 
-| Laravel | Our Clone | Reason |
-|---------|-----------|--------|
-| `Controller` has `callAction()`, middleware registration | Just helper methods | Dispatch is Router's job |
-| `Controller::middleware()` per-method middleware | Not implemented | Route-level middleware covers most cases |
-| `FormRequest` injection for validation | Inline validation | Covered in Step 12 |
-| `__invoke()` single-action controllers | Can use closures instead | Same concept |
-| `ResponseFactory` for view/redirect/json | Methods on base Controller | Simpler |
+| Laravel | Our Implementation | Reason |
+|---------|-------------------|--------|
+| Base `Controller` class | Plain PHP classes | Laravel's base controller adds `ValidatesRequests` and `AuthorizesRequests` traits, which we don't have yet. |
+| Route Model Binding | Skipped | Requires dynamic route params and DB integration. |
+| Controller Middleware | Skipped | Requires parsing annotations/constructors for middleware assignments. |
 
 ---
 

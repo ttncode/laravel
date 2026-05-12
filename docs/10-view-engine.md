@@ -2,53 +2,52 @@
 
 ---
 
-## 1. 🎯 Purpose (WHY)
+## 🚩 The Problem
 
-The **View Engine** separates presentation from logic. Instead of echoing HTML strings inside controllers, views live in dedicated template files — cleaner, reusable, designer-friendly.
+Right now, if we want to return an HTML page from our Controller, we have to do this:
 
-Without a view engine:
 ```php
-// In controller — ugly, unmaintainable
-return $this->response("<html><body><h1>Hello {$user['name']}</h1>...</body></html>");
+public function index()
+{
+    $title = "Welcome";
+    $users = ['Alice', 'Bob'];
+    
+    $html = "<html><head><title>{$title}</title></head><body><ul>";
+    foreach ($users as $user) {
+        $html .= "<li>{$user}</li>";
+    }
+    $html .= "</ul></body></html>";
+    
+    return $html;
+}
 ```
 
-With a view engine:
-```php
-// Clean — controller stays logic-only
-return $this->view('users.show', ['user' => $user]);
-```
-
-**Laravel equivalent:** `Illuminate\View\View` + `Illuminate\View\Factory` + Blade compiler
-
-We implement a **minimal PHP template engine** — no Blade compilation, but the same `view()` API and `$this->view()` pattern.
+**Why is this bad?**
+1. **Unreadable:** Mixing complex HTML into PHP strings is visually noisy and prone to syntax errors.
+2. **Separation of Concerns:** Controllers should handle *business logic* and data retrieval, not *presentation*.
+3. **No Editor Support:** Your IDE cannot provide HTML autocompletion inside a PHP string.
 
 ---
 
-## 2. 🧠 Concept (WHAT)
+## 💡 The Solution: A View Component
 
-Our view engine does three things:
+We extract the HTML into separate template files. The Controller retrieves data, and passes it to the **View Engine**. The View Engine loads the template, injects the variables, and renders the final HTML string.
 
-1. **Locate** the template file (`users.show` → `resources/views/users/show.php`)
-2. **Extract** variables into the template's scope
-3. **Capture** the output via output buffering
-
-```
-view('users.show', ['user' => $user])
-  → find resources/views/users/show.php
-  → extract(['user' => $user])       // $user is now available in template
-  → ob_start()
-  → include 'users/show.php'
-  → $html = ob_get_clean()
-  → return $html
-```
-
-Template files are plain PHP — no special syntax required. You CAN add a thin Blade-like preprocessing layer later (Step extension), but for now we use `<?= ?>` and `<?php ?>`.
+In PHP, we can use **Output Buffering** (`ob_start()` and `ob_get_clean()`) to isolate a file's output. Instead of echoing directly to the browser, we capture the echoed HTML into a string, which we then return as a `Response`.
 
 ---
 
-## 3. 🏗 Implementation (HOW)
+## 🏗 Implementation
 
-### File: `laravel-clone/src/View/View.php`
+```bash
+mkdir -p src/View
+touch src/View/View.php
+touch src/helpers.php
+mkdir -p resources/views
+touch resources/views/home.php
+```
+
+### File: `src/View/View.php`
 
 ```php
 <?php
@@ -57,237 +56,71 @@ namespace Framework\View;
 
 class View
 {
-    protected string $path;
-    protected array  $data;
+    protected string $basePath;
 
-    public function __construct(string $path, array $data = [])
+    public function __construct(string $basePath)
     {
-        $this->path = $path;
-        $this->data = $data;
+        $this->basePath = rtrim($basePath, '/\\');
     }
 
     /**
-     * Render the view to a string.
-     *
-     * Uses output buffering + extract() to make $data available
-     * as local variables inside the template file.
+     * Render a view template with the given data.
+     * 
+     * Example: render('home', ['title' => 'Hello'])
+     * Looks for: resources/views/home.php
      */
-    public function render(): string
+    public function render(string $view, array $data = []): string
     {
-        if (! file_exists($this->path)) {
-            throw new \RuntimeException("View not found: [{$this->path}]");
+        $path = $this->basePath . DIRECTORY_SEPARATOR . str_replace('.', DIRECTORY_SEPARATOR, $view) . '.php';
+
+        if (! file_exists($path)) {
+            throw new \RuntimeException("View [{$view}] not found at [{$path}].");
         }
 
-        // Make $data keys available as local variables
-        extract($this->data, EXTR_SKIP);
+        // Extract the array into distinct variables.
+        // e.g. ['title' => 'Hello'] becomes $title = 'Hello'
+        extract($data);
 
-        // Capture output
+        // Start output buffering
         ob_start();
 
-        try {
-            include $this->path;
-        } catch (\Throwable $e) {
-            ob_end_clean();
-            throw $e;
-        }
+        // Include the file. Any HTML or echo statements inside will be 
+        // captured by the buffer instead of sent to the browser.
+        require $path;
 
+        // Return the captured buffer and turn off buffering
         return ob_get_clean();
     }
-
-    /**
-     * Render when cast to string.
-     */
-    public function __toString(): string
-    {
-        return $this->render();
-    }
-
-    /**
-     * Add more data to the view.
-     */
-    public function with(string|array $key, mixed $value = null): static
-    {
-        if (is_array($key)) {
-            $this->data = array_merge($this->data, $key);
-        } else {
-            $this->data[$key] = $value;
-        }
-
-        return $this;
-    }
 }
 ```
 
-### File: `laravel-clone/src/View/ViewFactory.php`
+### File: `src/helpers.php`
+
+In Laravel, you rarely type `(new View)->render()`. You use global helper functions.
 
 ```php
 <?php
 
-namespace Framework\View;
-
-class ViewFactory
-{
-    /**
-     * Base path for view files.
-     */
-    protected string $viewsPath;
-
-    public function __construct(string $viewsPath)
-    {
-        $this->viewsPath = rtrim($viewsPath, '/\\');
-    }
-
-    /**
-     * Create a View instance.
-     *
-     * @param string $name   Dot-notation name: 'users.show' → 'users/show.php'
-     * @param array  $data   Variables to pass to the view
-     */
-    public function make(string $name, array $data = []): View
-    {
-        $path = $this->resolvePath($name);
-
-        return new View($path, $data);
-    }
-
-    /**
-     * Render a view directly to a string.
-     */
-    public function render(string $name, array $data = []): string
-    {
-        return $this->make($name, $data)->render();
-    }
-
-    /**
-     * Convert dot-notation name to file path.
-     * 'users.show' → '/path/to/resources/views/users/show.php'
-     */
-    protected function resolvePath(string $name): string
-    {
-        $relative = str_replace('.', DIRECTORY_SEPARATOR, $name) . '.php';
-
-        return $this->viewsPath . DIRECTORY_SEPARATOR . $relative;
-    }
-}
-```
-
-### File: `laravel-clone/src/View/ViewServiceProvider.php`
-
-```php
-<?php
-
-namespace Framework\View;
-
-use Framework\Support\ServiceProvider;
-
-class ViewServiceProvider extends ServiceProvider
-{
-    public function register(): void
-    {
-        $this->app->singleton(ViewFactory::class, function ($app) {
-            $viewsPath = $app->resourcePath('views');
-
-            return new ViewFactory($viewsPath);
-        });
-
-        $this->app->alias(ViewFactory::class, 'view');
-    }
-}
-```
-
-### Updated: `laravel-clone/src/Routing/Controller.php`
-
-Add a `view()` helper method:
-
-```php
-<?php
-
-namespace Framework\Routing;
-
-use Framework\Http\Request;
-use Framework\Http\Response;
-use Framework\Http\JsonResponse;
-use Framework\View\ViewFactory;
-
-abstract class Controller
-{
-    /**
-     * Render a view and return an HTML response.
-     */
-    protected function view(string $viewName, array $data = [], int $status = 200): Response
-    {
-        // Resolve the ViewFactory from the container
-        $factory = app()->make(ViewFactory::class);
-        $html    = $factory->render($viewName, $data);
-
-        return new Response($html, $status);
-    }
-
-    protected function response(string $content, int $status = 200, array $headers = []): Response
-    {
-        return new Response($content, $status, $headers);
-    }
-
-    protected function json(mixed $data, int $status = 200, array $headers = []): JsonResponse
-    {
-        return new JsonResponse($data, $status, $headers);
-    }
-
-    protected function redirect(string $url, int $status = 302): Response
-    {
-        return Response::redirect($url, $status);
-    }
-
-    protected function abort(int $status, string $message = ''): never
-    {
-        throw new \RuntimeException($message ?: "HTTP {$status}");
-    }
-}
-```
-
-### Global `view()` helper: `laravel-clone/src/helpers.php`
-
-```php
-<?php
-
-if (! function_exists('app')) {
-    function app(string $abstract = null): mixed
-    {
-        $container = \Framework\Container\Container::getInstance();
-
-        if ($abstract === null) {
-            return $container;
-        }
-
-        return $container->make($abstract);
-    }
-}
+use Framework\Container\Container;
+use Framework\View\View;
 
 if (! function_exists('view')) {
-    function view(string $name, array $data = []): \Framework\View\View
+    /**
+     * Global helper to render a view.
+     */
+    function view(string $name, array $data = []): string
     {
-        return app(\Framework\View\ViewFactory::class)->make($name, $data);
-    }
-}
-
-if (! function_exists('config')) {
-    function config(string $key, mixed $default = null): mixed
-    {
-        return app('config')->get($key, $default);
-    }
-}
-
-if (! function_exists('redirect')) {
-    function redirect(string $url, int $status = 302): \Framework\Http\Response
-    {
-        return \Framework\Http\Response::redirect($url, $status);
+        // Resolve the View engine from the container
+        $viewEngine = Container::getInstance()->make(View::class);
+        
+        return $viewEngine->render($name, $data);
     }
 }
 ```
 
-Register in `composer.json`:
+We need to tell Composer to always load this `helpers.php` file. Update your `composer.json`:
+
 ```json
-{
     "autoload": {
         "psr-4": {
             "App\\": "app/",
@@ -296,169 +129,100 @@ Register in `composer.json`:
         "files": [
             "src/helpers.php"
         ]
-    }
-}
+    },
+```
+Run `composer dump-autoload` after making this change!
+
+### Update: `bootstrap/app.php`
+
+We need to bind the `View` class into the container so the helper can resolve it, passing it the correct path to the `resources/views` directory.
+
+Add this right before `return $app;`:
+
+```php
+// ...
+
+$app->singleton(\Framework\View\View::class, function ($app) {
+    return new \Framework\View\View($app->resourcePath('views'));
+});
+
+return $app;
 ```
 
-### Template files
-
-### `laravel-clone/resources/views/layout.php`
+### Create a Template: `resources/views/home.php`
 
 ```php
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title><?= htmlspecialchars($title ?? 'Laravel Clone') ?></title>
+    <title><?= htmlspecialchars($title) ?></title>
 </head>
 <body>
-    <nav>
-        <a href="/">Home</a> |
-        <a href="/users">Users</a>
-    </nav>
-    <hr>
-    <main>
-        <?= $content ?? '' ?>
-    </main>
+    <h1><?= htmlspecialchars($heading) ?></h1>
+    
+    <ul>
+        <?php foreach ($users as $user): ?>
+            <li><?= htmlspecialchars($user) ?></li>
+        <?php endforeach; ?>
+    </ul>
 </body>
 </html>
 ```
+*(Always use `htmlspecialchars` when echoing variables to prevent XSS attacks!)*
 
-### `laravel-clone/resources/views/home.php`
-
-```php
-<?php $title = 'Welcome'; ?>
-<h1>Welcome to Laravel Clone!</h1>
-<p>A minimal PHP framework inspired by Laravel 13.</p>
-<a href="/users">View Users →</a>
-```
-
-### `laravel-clone/resources/views/users/index.php`
+### Update the Controller: `app/Controllers/HomeController.php`
 
 ```php
-<?php $title = 'Users'; ?>
-<h1>All Users</h1>
-<ul>
-    <?php foreach ($users as $user): ?>
-        <li>
-            <a href="/users/<?= $user['id'] ?>">
-                <?= htmlspecialchars($user['name']) ?>
-            </a>
-            — <?= htmlspecialchars($user['email']) ?>
-        </li>
-    <?php endforeach; ?>
-</ul>
-<a href="/">← Back</a>
-```
+<?php
 
-### `laravel-clone/resources/views/users/show.php`
+namespace App\Controllers;
 
-```php
-<?php $title = $user['name']; ?>
-<h1><?= htmlspecialchars($user['name']) ?></h1>
-<p>Email: <?= htmlspecialchars($user['email']) ?></p>
-<a href="/users">← Back to Users</a>
-```
+use Framework\Http\Request;
 
----
-
-## 4. 🔗 Integration
-
-Register the `ViewServiceProvider` in `config/app.php`:
-
-```php
-'providers' => [
-    \Framework\Routing\RoutingServiceProvider::class,
-    \Framework\View\ViewServiceProvider::class,       // ← add this
-    \App\Providers\AppServiceProvider::class,
-],
-```
-
-Update the `UserController` to use views:
-
-```php
-public function index(Request $request): Response
+class HomeController
 {
-    $users = [
-        ['id' => 1, 'name' => 'Alice', 'email' => 'alice@example.com'],
-        ['id' => 2, 'name' => 'Bob',   'email' => 'bob@example.com'],
-    ];
-
-    if ($request->expectsJson()) {
-        return $this->json($users);
+    public function index(Request $request)
+    {
+        // The business logic is clean and separate from presentation.
+        return view('home', [
+            'title'   => 'Laravel Clone',
+            'heading' => 'Users List',
+            'users'   => ['Alice', 'Bob', 'Charlie']
+        ]);
     }
-
-    return $this->view('users.index', compact('users'));
 }
 ```
 
 ---
 
-## 5. ✅ Usage Example
+## ✅ Verify
 
-```php
-// In a controller:
-return $this->view('users.show', ['user' => $user]);
+1. Run `composer dump-autoload` (to load `helpers.php`).
+2. Run the server: `php -S 0.0.0.0:8000 -t public`
+3. Open `http://localhost:8000/`.
 
-// In a route closure:
-$router->get('/about', function () {
-    return view('about');
-});
-
-// Nested views:
-$router->get('/posts/{slug}', function (string $slug) {
-    return view('posts.show', ['post' => findPost($slug)]);
-});
-```
-
-### Template with escaping
-
-```php
-<!-- resources/views/posts/show.php -->
-<h1><?= htmlspecialchars($post['title']) ?></h1>
-<p><?= htmlspecialchars($post['body']) ?></p>
-
-<!-- Loop -->
-<?php foreach ($post['tags'] as $tag): ?>
-    <span class="tag"><?= htmlspecialchars($tag) ?></span>
-<?php endforeach; ?>
-
-<!-- Conditional -->
-<?php if ($post['published']): ?>
-    <p>Published</p>
-<?php else: ?>
-    <p>Draft</p>
-<?php endif; ?>
-```
+You should see a properly formatted HTML page with a list of users.
 
 ---
 
-## 6. 📌 Key Elements
+## 📌 What We Built
 
 | Element | Purpose |
 |---------|---------|
-| `View::render()` | `extract()` + `ob_start()` + `include` |
-| `ViewFactory::make()` | Converts dot-notation to file path |
-| `ViewServiceProvider` | Registers `ViewFactory` as singleton |
-| `resources/views/` | Template files location |
-| `src/helpers.php` | Global `view()`, `app()`, `config()` functions |
-| `$title`, `$content` in templates | Simple variable extraction |
+| `View` Engine | Uses Output Buffering to render PHP templates into strings. |
+| `view()` helper | Global function for developer convenience. |
+| `resources/views` | Dedicated directory for presentation files. |
 
 ---
 
-## 7. ⚠️ Simplifications Made
+## ⚠️ Simplifications vs Laravel
 
-| Laravel | Our Clone | Reason |
-|---------|-----------|--------|
-| Blade compiler (`.blade.php` → `.php` cache) | Plain PHP templates | No compilation step |
-| `@extends`, `@section`, `@yield` | Not implemented | Use PHP `include` for layouts |
-| `@foreach`, `@if` Blade directives | Use `<?php foreach ?>` | Same output |
-| `{{ $var }}` auto-escaping | Use `<?= htmlspecialchars() ?>` | Manual escaping |
-| View composers / creators | Not implemented | Extra hook system |
-| Namespaced views (`vendor::views`) | Not implemented | Package views |
-| View caching | Not implemented | Optimization |
+| Laravel | Our Implementation | Reason |
+|---------|-------------------|--------|
+| Blade Template Engine (`.blade.php`) | Plain PHP templates | Blade requires a complex compiler to parse `@if`, `@foreach`, and components into PHP. Plain PHP is sufficient to teach the core concept. |
+| View Composers | Skipped | Advanced feature. |
+| View Factory / Finder | Single `View` class | Laravel splits the logic of finding files on disk and compiling them into multiple classes. |
 
 ---
 
-**Next:** [Step 11 — Config & Env →](./11-config-env.md)
+**Next:** [Step 11 — Config & Environment →](./11-config-env.md)
