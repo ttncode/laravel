@@ -37,7 +37,7 @@ class Container
         return static::$instance;
     }
 
-    public function setInstance(self $container): void
+    public static function setInstance(self $container): void
     {
         static::$instance = $container;
     }

@@ -1,18 +1,14 @@
 <?php
 
-// Load the autoloader
+use Framework\Foundation\Application;
+use Framework\Http\Request;
+
+// Register the Composer autoload...[  p;0-]]"
+
 require_once __DIR__ . '/../vendor/autoload.php';
 
-// Boost the application
+// Bootstrap Laravel and handle the request...
+/** @var Application $app */
 $app = require_once __DIR__ . '/../bootstrap/app.php';
 
-// Handle the HTTP request
-$kernel = $app->make(\Framework\Http\Kernel::class);
-$request = \Framework\Http\Request::capture();
-$response = $kernel->handle($request);
-
-// Send back a response
-$response->send();
-
-// Kernel cleanup (terminate any middleware)
-$kernel->terminate($request, $response);
+$app->handleRequest(Request::capture());

@@ -1,14 +1,17 @@
 <?php
 
-// Create and configure the Application
-$app = new \Framework\Foundation\Application(
-    basePath: dirname(__DIR__)
-);
+use Framework\Foundation\Application;
+use Framework\Foundation\Configuration\Middleware;
+use Framework\Foundation\Configuration\Exceptions;
 
-// Register the HTTP Kernel binding
-$app->singleton(
-    \Framework\Http\Kernel::class,
-    \Framework\Http\Kernel::class
-);
-
-return $app;
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        web: __DIR__ . '/../routes/web.php',
+    )
+    ->withMiddleware(function (Middleware $middleware): void {
+        //
+    })
+    ->withExceptions(function (Exceptions $exceptions): void {
+        //
+    })
+    ->create();

@@ -38,8 +38,6 @@ To provide a pristine developer experience, Laravel hides the core wiring behind
 
 ---
 
-## 🏗 Implementation
-
 ### File: `src/Foundation/Configuration/Middleware.php`
 A simple object to collect middleware configuration.
 
@@ -83,8 +81,82 @@ class Exceptions
 }
 ```
 
+### File: `src/Http/Request.php`
+A simple DTO to represent the incoming HTTP request.
+
+```php
+<?php
+
+namespace Framework\Http;
+
+class Request
+{
+    /**
+     * Create a new Request instance from the current globals.
+     */
+    public static function capture(): static
+    {
+        return new static();
+    }
+}
+```
+
+### File: `src/Http/Response.php`
+A simple object to encapsulate the HTTP response sent back to the browser.
+
+```php
+<?php
+
+namespace Framework\Http;
+
+class Response
+{
+    public function __construct(
+        protected string $content = '',
+        protected int $status = 200,
+        protected array $headers = []
+    ) {}
+
+    public function send(): void
+    {
+        echo $this->content;
+    }
+
+    public function getContent(): string
+    {
+        return $this->content;
+    }
+}
+```
+
+### File: `src/Http/Kernel.php`
+The Kernel is the orchestrator of the HTTP request. At this stage, we only need a skeleton so the container has something to bind to. (We will implement the logic in Step 05).
+
+```php
+<?php
+
+namespace Framework\Http;
+
+use Framework\Foundation\Application;
+
+class Kernel
+{
+    protected Application $app;
+
+    public function __construct(Application $app)
+    {
+        $this->app = $app;
+    }
+
+    public function handle(Request $request): Response
+    {
+        return new Response('Kernel is handling the request!');
+    }
+}
+```
+
 ### File: `src/Foundation/Configuration/ApplicationBuilder.php`
-The fluent builder that constructs the Application.
+The fluent builder that constructs the Application. Note the `withKernels()` method which explicitly handles the core framework bindings.
 
 ```php
 <?php
@@ -105,11 +177,23 @@ class ApplicationBuilder
         $this->app = $app;
     }
 
-    public function withRouting(?string $web = null, ?string $api = null, ?string $commands = null, ?string $health = null): static
+    /**
+     * Register the standard kernel classes for the application.
+     */
+    public function withKernels(): static
+    {
+        $this->app->singleton(
+            \Framework\Http\Kernel::class,
+            \Framework\Http\Kernel::class
+        );
+
+        return $this;
+    }
+
+    public function withRouting(?string $web = null, ?string $api = null): static
     {
         if ($web) $this->routing['web'] = $web;
         if ($api) $this->routing['api'] = $api;
-        // commands and health omitted for simplicity
         
         return $this;
     }
@@ -131,23 +215,17 @@ class ApplicationBuilder
      */
     public function create(): Application
     {
-        // 1. Bind the HTTP Kernel into the container automatically
-        $this->app->singleton(
-            \Framework\Http\Kernel::class,
-            \Framework\Http\Kernel::class
-        );
-
-        // 2. Store the routing paths in the application
+        // 1. Store the routing paths in the application
         $this->app->instance('config.routing', $this->routing);
 
-        // 3. Process Middleware Configuration
+        // 2. Process Middleware Configuration
         $middleware = new Middleware();
         if ($this->middlewareCallback) {
             call_user_func($this->middlewareCallback, $middleware);
         }
         $this->app->instance(Middleware::class, $middleware);
 
-        // 4. Process Exceptions Configuration
+        // 3. Process Exceptions Configuration
         $exceptions = new Exceptions();
         if ($this->exceptionsCallback) {
             call_user_func($this->exceptionsCallback, $exceptions);
@@ -160,7 +238,7 @@ class ApplicationBuilder
 ```
 
 ### File: `src/Foundation/Application.php`
-The core Application class, updated with the static `configure()` entry point.
+The core Application class. We update `configure()` to automatically invoke `withKernels()` so the developer doesn't have to call it manually in `bootstrap/app.php`.
 
 ```php
 <?php
@@ -176,8 +254,6 @@ class Application extends Container
     protected bool $hasBeenBootstrapped = false;
     protected bool $booted = false;
     protected array $serviceProviders = [];
-    protected array $bootingCallbacks = [];
-    protected array $bootedCallbacks = [];
 
     public function __construct(string $basePath)
     {
@@ -190,7 +266,8 @@ class Application extends Container
      */
     public static function configure(string $basePath): ApplicationBuilder
     {
-        return new ApplicationBuilder(new static($basePath));
+        return (new ApplicationBuilder(new static($basePath)))
+            ->withKernels(); // Automatically register the Kernel
     }
 
     protected function registerBaseBindings(): void
@@ -209,22 +286,27 @@ class Application extends Container
         }
     }
 
+    public function hasBeenBootstrapped(): bool
+    {
+        return $this->hasBeenBootstrapped;
+    }
+
     public function boot(): void
     {
         if ($this->booted) return;
 
-        foreach ($this->bootingCallbacks as $callback) $callback($this);
         foreach ($this->serviceProviders as $provider) {
             if (method_exists($provider, 'boot')) $provider->boot();
         }
         $this->booted = true;
-        foreach ($this->bootedCallbacks as $callback) $callback($this);
     }
 
     // Path Helpers
     public function basePath(string $path = ''): string { return $this->joinPath($this->basePath, $path); }
     public function configPath(string $path = ''): string { return $this->joinPath($this->basePath . '/config', $path); }
     public function routesPath(string $path = ''): string { return $this->joinPath($this->basePath . '/routes', $path); }
+    public function resourcePath(string $path = ''): string { return $this->joinPath($this->basePath . '/resources', $path); }
+
     protected function joinPath(string $base, string $path): string {
         return $path ? $base . DIRECTORY_SEPARATOR . ltrim($path, '/\\') : $base;
     }
