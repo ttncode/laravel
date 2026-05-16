@@ -16,7 +16,10 @@ class Kernel implements KernelContract
      *
      * @var string[]
      */
-    protected $bootstrappers = [];
+    protected array $bootstrappers = [
+        \Framework\Foundation\Bootstrap\RegisterProviders::class,
+        \Framework\Foundation\Bootstrap\BootProviders::class,
+    ];
 
     public function __construct(
         protected Application $app,
@@ -68,14 +71,6 @@ class Kernel implements KernelContract
     protected function dispatchToRouter(): \Closure
     {
         return function ($request) {
-            $routingConfig = $this->app->make('config.routing');
-
-            if (isset($routingConfig['web']) && file_exists($routingConfig['web'])) {
-                $router = $this->router;
-
-                require $routingConfig['web'];
-            }
-
             return $this->router->dispatch($request);
         };
     }

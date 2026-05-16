@@ -14,8 +14,7 @@ class AuthenticationMiddleware
         /** @var Response $response */
         $response = $next($request);
 
-        $content = $response->getContent() ?? '';
-        $response->setContent($content . '<h4>[Authentication Middleware] - Finishing the request.</h4>');
+        echo '<h4>[Authentication Middleware] - Finishing the request.</h4>';
 
         return $response;
     }

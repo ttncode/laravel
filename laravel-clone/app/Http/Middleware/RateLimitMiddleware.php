@@ -14,8 +14,7 @@ class RateLimitMiddleware
         /** @var Response $response */
         $response = $next($request);
 
-        $content = $response->getContent() ?? '';
-        $response->setContent($content . '<h4>[RateLimit Middleware] - Finishing the request.</h4>');
+        echo '<h4>[RateLimit Middleware] - Finishing the request.</h4>';
 
         return $response;
     }

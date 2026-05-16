@@ -2,6 +2,7 @@
 
 namespace Framework\Foundation;
 
+use App\Providers\RoutingServiceProvider;
 use Framework\Container\Container;
 use Framework\Contracts\Http\Kernel as HttpKernelContract;
 use Framework\Http\Request;
@@ -67,6 +68,7 @@ class Application extends Container
         $this->basePath = rtrim($basePath, '/\\');
 
         $this->registerBaseBindings();
+        $this->registerBaseServiceProviders();
     }
 
     /**
@@ -93,6 +95,45 @@ class Application extends Container
         $this->instance('app', $this);
         $this->instance(Container::class, $this);
         $this->instance(Application::class, $this);
+    }
+
+    /**
+     * Register the basic service providers.
+     *
+     * @return void
+     */
+    protected function registerBaseServiceProviders(): void
+    {
+        $this->register(new RoutingServiceProvider($this));
+    }
+
+    /**
+     * Register a service provider with the application.
+     *
+     * @param  \Framework\Support\ServiceProvider|string  $provider
+     * @return \Framework\Support\ServiceProvider
+     */
+    protected function register($provider)
+    {
+        if (is_string($provider)) {
+            $provider = new $provider($this);
+        }
+
+        /** @var \App\Providers\AppServiceProvider $provider */
+        $provider->register();
+
+        $this->serviceProviders[] = $provider;
+    }
+
+    /**
+     * Register a service provider with the application.
+     *
+     * @param  \Framework\Support\ServiceProvider $provider
+     * @return void
+     */
+    public function registerProvider(\Framework\Support\ServiceProvider $provider): void
+    {
+        $this->serviceProviders[] = $provider;
     }
 
 
